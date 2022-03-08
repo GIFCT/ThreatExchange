@@ -46,4 +46,6 @@ main.py.zip
 settings.py 
 # __init__.py and one other file are committed as an example. 
 # all other files added are expected to be third party additions/custom implementations. 
-hmalib_extensions/
+
+# We comment out hmalib_extensions on our fork in order to manage extension code.
+# hmalib_extensions/
