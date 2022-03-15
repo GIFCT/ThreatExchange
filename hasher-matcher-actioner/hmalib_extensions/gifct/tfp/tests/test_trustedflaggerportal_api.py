@@ -13,9 +13,9 @@ TFP_X_API_KEY = os.getenv("TFP_X_API_KEY")
 
 TFP_BASE_URL = os.getenv("TFP_BASE_URL")
 
+
 @unittest.skipUnless(
-    TFP_X_API_KEY and TFP_BASE_URL,
-    "Integration test requires api key and a base url"
+    TFP_X_API_KEY and TFP_BASE_URL, "Integration test requires api key and a base url"
 )
 class TrustedFlaggerPortalAPIIntegrationTest(unittest.TestCase):
     def setUp(self):

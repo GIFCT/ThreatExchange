@@ -7,6 +7,7 @@ from datetime import datetime
 from dataclasses import dataclass
 import typing as t
 
+
 @dataclass
 class HashRecord:
     """
@@ -33,17 +34,17 @@ class HashRecord:
 
     # The kind of signal the hash corresponds to (MD5, PDQ, etc)
     signal_type: str
-    
+
     @classmethod
     def from_dict(cls, d: dict) -> "HashRecord":
         return cls(
-            date = d.get("date", None),
-            created_at = datetime.fromtimestamp(d.get("created_at", None)),
-            hash_value = d.get("indicator", None),
-            confidence = d.get("confidence", None),
-            description = d.get("description", None),
-            tags = d.get("tags", []),
-            signal_type = d.get("type", None)
+            date=d.get("date", None),
+            created_at=datetime.fromtimestamp(d.get("created_at", None)),
+            hash_value=d.get("indicator", None),
+            confidence=d.get("confidence", None),
+            description=d.get("description", None),
+            tags=d.get("tags", []),
+            signal_type=d.get("type", None),
         )
 
 
@@ -73,9 +74,9 @@ class HashRecordsPage:
     @classmethod
     def from_dict(cls, d: dict) -> "HashRecordsPage":
         return cls(
-            count = d.get("count", None),
-            hash_records = [HashRecord.from_dict(x) for x in d.get("hash_records", [])],
-            next_set_timestamp = d.get("next_set_timestamp", None),
-            has_more_records = d.get("has_more_records", None),
-            next_page_token = d.get("next_page_token", None)
+            count=d.get("count", None),
+            hash_records=[HashRecord.from_dict(x) for x in d.get("hash_records", [])],
+            next_set_timestamp=d.get("next_set_timestamp", None),
+            has_more_records=d.get("has_more_records", None),
+            next_page_token=d.get("next_page_token", None),
         )
