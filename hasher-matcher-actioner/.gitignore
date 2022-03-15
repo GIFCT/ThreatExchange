@@ -46,4 +46,7 @@ main.py.zip
 settings.py 
 # __init__.py and one other file are committed as an example. 
 # all other files added are expected to be third party additions/custom implementations. 
+
+# We except out hmalib_extensions/gifct on our fork in order to manage our extension code.
 hmalib_extensions/
+!hmalib_extensions/gifct

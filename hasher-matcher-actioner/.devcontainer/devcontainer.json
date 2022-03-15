@@ -4,16 +4,16 @@
     "dockerfile": "Dockerfile",
     "args": {
       // MacOS and Linux use ${localEnv:USER}, Windows uses ${localEnv:USERNAME}
-      "unixname": "${localEnv:USER}${localEnv:USERNAME}"
+      "unixname": "${localEnv:USER}"
     }
   },
   // MacOS and Linux use ${env:USER}, Windows uses ${env:USERNAME}
-  "remoteUser": "${localEnv:USER}${localEnv:USERNAME}",
+  "remoteUser": "${localEnv:USER}",
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
     // MacOS and Linux use ${localEnv:HOME}, Windows uses ${localEnv:USERPROFILE}
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.aws,target=/var/run/aws-config,type=bind,consistency=cached",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.hma-cmdhist,target=/commandhistory,type=bind"
+    "source=${localEnv:HOME}/.aws,target=/var/run/aws-config,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.hma-cmdhist,target=/commandhistory,type=bind"
   ],
   "name": "hma-devserver",
   // Set *default* container specific settings.json values on container create.
