@@ -25,10 +25,13 @@
 #include <tmk/cpp/io/tmkio.h>
 #include <tmk/cpp/bin/tmk_default_thresholds.h>
 
+#include <omp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <map>
+
+#include <chrono>
+#include <unordered_map>
 #include <set>
 
 using namespace facebook::tmk;
@@ -37,7 +40,7 @@ using namespace facebook::tmk::algo;
 void handleInputFileNameOrDie(
     const char* argv0,
     const char* tmkFileName,
-    std::map<std::string, std::shared_ptr<TMKFeatureVectors>>&
+    std::unordered_map<std::string, std::shared_ptr<TMKFeatureVectors>>&
         metadataToFeatures);
 
 // ================================================================
@@ -59,6 +62,8 @@ void usage(const char* argv0, int exit_rc) {
       DEFAULT_LEVEL_2_THRESHOLD);
   fprintf(
       fp, "--include-self: Match each hash against itself as well as others.\n");
+  fprintf(fp, "-v|--verbose: Be more verbose.\n");
+
   exit(exit_rc);
 }
 
@@ -68,6 +73,7 @@ int main(int argc, char** argv) {
   float c1 = DEFAULT_LEVEL_1_THRESHOLD;
   float c2 = DEFAULT_LEVEL_2_THRESHOLD;
   bool includeSelf = false;
+  bool verbose = false;
 
   int argi = 1;
   while ((argi < argc) && argv[argi][0] == '-') {
@@ -77,6 +83,8 @@ int main(int argc, char** argv) {
 
     } else if (!strcmp(flag, "-i")) {
       fileNamesFromStdin = true;
+    } else if (!strcmp(flag, "-v") || !strcmp(flag, "--verbose")) {
+      verbose = true;
 
     } else if (!strcmp(flag, "--c1")) {
       if (argi >= argc) {
@@ -120,7 +128,7 @@ int main(int argc, char** argv) {
 
   //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   // LOAD FEATURES
-  std::map<std::string, std::shared_ptr<TMKFeatureVectors>> metadataToFeatures;
+  std::unordered_map<std::string, std::shared_ptr<TMKFeatureVectors>> metadataToFeatures;
   if (fileNamesFromStdin) {
     char* tmkFileName = nullptr;
     size_t linelen = 0;
@@ -142,39 +150,58 @@ int main(int argc, char** argv) {
 
   //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   // COMPUTE AND PRINT SCORES
-  for (const auto& it1 : metadataToFeatures) {
-    const std::string& metadata1 = it1.first;
-    std::shared_ptr<TMKFeatureVectors> pfv1 = it1.second;
 
-    for (const auto& it2 : metadataToFeatures) {
-      const std::string& metadata2 = it2.first;
-      std::shared_ptr<TMKFeatureVectors> pfv2 = it2.second;
+  std::chrono::time_point<std::chrono::system_clock> startScores =
+      std::chrono::system_clock::now();
 
-      if (!TMKFeatureVectors::areCompatible(*pfv1, *pfv2)) {
-        fprintf(
-            stderr,
-            "%s: immiscible provenances:\n%s\n%s\n",
-            argv[0],
-            metadata1.c_str(),
-            metadata2.c_str());
-        exit(1);
+  if (verbose) {
+    printf("\n");
+    printf("CALCULATING THE SCORES\n");
+  }
+
+  std::vector<std::string> filenames;
+  filenames.reserve(metadataToFeatures.size());
+
+  for (const auto &s : metadataToFeatures)
+    filenames.push_back(s.first);
+
+  int selfOffset = includeSelf ? 0 : 1;
+
+  #pragma omp parallel for schedule(dynamic)
+    for (unsigned int i = 0; i < filenames.size() - selfOffset; i++) {
+      for (unsigned int j = i + selfOffset; j < filenames.size(); j++) {
+        bool flip = filenames[i] > filenames[j];
+        const std::string &filename1 = flip ? filenames[j] : filenames[i];
+        const std::string &filename2 = flip ? filenames[i] : filenames[j];
+
+        const std::shared_ptr<TMKFeatureVectors> pfv1 = metadataToFeatures.at(filename1);
+        const std::shared_ptr<TMKFeatureVectors> pfv2 = metadataToFeatures.at(filename2);
+
+        if (!TMKFeatureVectors::areCompatible(*pfv1, *pfv2)) {
+          fprintf(
+              stderr,
+              "%s: immiscible provenances:\n%s\n%s\n",
+              argv[0],
+              filename1.c_str(),
+              filename2.c_str());
+          exit(1);
+        }
+
+        float s1 = TMKFeatureVectors::computeLevel1Score(*pfv1, *pfv2);
+        if (s1 >= c1) {
+          float s2 = TMKFeatureVectors::computeLevel2Score(*pfv1, *pfv2);
+          printf(
+              "%.6f %.6f %s %s\n", s1, s2, filename1.c_str(), filename2.c_str());
+        }
       }
+    } // end parallel
 
-      // Don't compare videos to themselves; don't do comparisons twice
-      // (A vs. B, then B vs. A).
-      bool skipThisPair =
-          includeSelf ? metadata1 > metadata2 : metadata1 >= metadata2;
-      if (skipThisPair) {
-        continue;
-      }
-
-      float s1 = TMKFeatureVectors::computeLevel1Score(*pfv1, *pfv2);
-      if (s1 >= c1) {
-        float s2 = TMKFeatureVectors::computeLevel2Score(*pfv1, *pfv2);
-        printf(
-            "%.6f %.6f %s %s\n", s1, s2, metadata1.c_str(), metadata2.c_str());
-      }
-    }
+  std::chrono::time_point<std::chrono::system_clock> endScores =
+      std::chrono::system_clock::now();
+  std::chrono::duration<double> scoresSeconds = endScores - startScores;
+  if (verbose) {
+    printf("\n");
+    printf("SCORES SECONDS = %.6lf\n", scoresSeconds.count());
   }
 
   return 0;
@@ -184,7 +211,7 @@ int main(int argc, char** argv) {
 void handleInputFileNameOrDie(
     const char* argv0,
     const char* tmkFileName,
-    std::map<std::string, std::shared_ptr<TMKFeatureVectors>>&
+    std::unordered_map<std::string, std::shared_ptr<TMKFeatureVectors>>&
         metadataToFeatures) {
   std::shared_ptr<TMKFeatureVectors> pfv =
       TMKFeatureVectors::readFromInputFile(tmkFileName, argv0);

@@ -2,6 +2,14 @@
 CC=g++ -O2 -std=c++14 -I../..
 FFMPEG=/usr/local/bin/ffmpeg # please customize according to your installation
 
+ifeq ($(OS),Windows_NT)
+  CC_IF_WIN=g++ -O2 -std=gnu++14 -I../..
+  OMP_LIB=-lgomp
+else
+  CC_IF_WIN=g++ -O2 -std=c++14 -I../..
+  OMP_LIB=-lomp
+endif
+
 # ----------------------------------------------------------------
 LIBHDR= \
 ../../pdq/cpp/common/pdqbasetypes.h \
@@ -42,6 +50,12 @@ LIBOBJ= \
 ./raster/rasterwriters.o \
 ./raster/timeresamplers.o
 
+EXE_PARALLEL= \
+ tmk-query-parallel \
+ tmk-clusterize-parallel \
+ tmk-two-level-score-parallel \
+ tmk-query-with-faiss
+
 EXE= \
  tmk-hash-video \
  feat2tmk \
@@ -54,11 +68,10 @@ EXE= \
  tmk-query \
  tmk-two-level-score
 
-# Pending https://github.com/facebook/ThreatExchange/issues/197:
-# tmk-query-with-faiss \
-
 # ================================================================
 all: $(EXE) regtest
+
+parallel: $(EXE_PARALLEL)
 
 regtest: tmk-hash-video tmk-compare-two-tmks .always
 	mkdir -p ./regtest
@@ -119,7 +132,7 @@ libtmk.a: $(LIBOBJ)
 	$(CC) -c ./hashing/bufferhashers.cpp -o ./hashing/bufferhashers.o
 
 ./hashing/filehasher.o: ./hashing/filehasher.cpp $(LIBHDR)
-	$(CC) -c ./hashing/filehasher.cpp -o ./hashing/filehasher.o
+	$(CC_IF_WIN) -c ./hashing/filehasher.cpp -o ./hashing/filehasher.o
 
 ./io/tmkio.o: ./io/tmkio.cpp $(LIBHDR)
 	$(CC) -c ./io/tmkio.cpp -o ./io/tmkio.o
@@ -142,7 +155,7 @@ feat2tmk: ./bin/feat2tmk.cpp $(LIBHDR) libtmk.a
 featdump: ./bin/featdump.cpp $(LIBHDR) libtmk.a
 	$(CC) bin/featdump.cpp -o featdump -L. -ltmk
 tmkdump: ./bin/tmkdump.cpp $(LIBHDR) libtmk.a
-	$(CC) bin/tmkdump.cpp -o tmkdump -L. -ltmk
+	$(CC_IF_WIN) bin/tmkdump.cpp -o tmkdump -L. -ltmk
 
 # ----------------------------------------------------------------
 tmk-compare-two-tmks: ./bin/tmk-compare-two-tmks.cpp $(LIBHDR) libtmk.a
@@ -152,13 +165,21 @@ tmk-show-pair-offsets: ./bin/tmk-show-pair-offsets.cpp $(LIBHDR) libtmk.a
 
 # ----------------------------------------------------------------
 tmk-clusterize: ./bin/tmk-clusterize.cpp $(LIBHDR) libtmk.a
-	$(CC) bin/tmk-clusterize.cpp -o tmk-clusterize -L. -ltmk
+	$(CC_IF_WIN) bin/tmk-clusterize.cpp -o tmk-clusterize -L. -ltmk
 tmk-query: ./bin/tmk-query.cpp $(LIBHDR) libtmk.a
-	$(CC) bin/tmk-query.cpp -o tmk-query -L. -ltmk
-tmk-query-with-faiss: ./bin/tmk-query-with-faiss.cpp $(LIBHDR) libtmk.a
-	$(CC) -I/usr/local/include/faiss bin/tmk-query-with-faiss.cpp -o tmk-query-with-faiss -L. -L/usr/local/lib -ltmk -lfaiss -Wl,-rpath=/usr/local/lib
+	$(CC_IF_WIN) bin/tmk-query.cpp -o tmk-query -L. -ltmk
 tmk-two-level-score: ./bin/tmk-two-level-score.cpp $(LIBHDR) libtmk.a
-	$(CC) bin/tmk-two-level-score.cpp -o tmk-two-level-score -L. -ltmk
+	$(CC_IF_WIN) bin/tmk-two-level-score.cpp -o tmk-two-level-score -L. -ltmk
+
+# ----------------------------------------------------------------
+tmk-clusterize-parallel: ./bin/tmk-clusterize.cpp $(LIBHDR) libtmk.a
+	$(CC_IF_WIN) -Xpreprocessor -fopenmp bin/tmk-clusterize.cpp -o tmk-clusterize-parallel -L. -ltmk $(OMP_LIB)
+tmk-query-with-faiss: ./bin/tmk-query-with-faiss.cpp $(LIBHDR) libtmk.a
+	$(CC_IF_WIN) -Xpreprocessor -fopenmp -I/usr/local/include/faiss bin/tmk-query-with-faiss.cpp -o tmk-query-with-faiss -L. -L/usr/local/lib -ltmk -lfaiss $(OMP_LIB) -Wl,-rpath,/usr/local/lib
+tmk-query-parallel: ./bin/tmk-query.cpp $(LIBHDR) libtmk.a
+	$(CC_IF_WIN) -Xpreprocessor -fopenmp bin/tmk-query.cpp -o tmk-query-parallel -L. -ltmk $(OMP_LIB)
+tmk-two-level-score-parallel: ./bin/tmk-two-level-score.cpp $(LIBHDR) libtmk.a
+	$(CC_IF_WIN) -Xpreprocessor -fopenmp bin/tmk-two-level-score.cpp -o tmk-two-level-score-parallel -L. -ltmk $(OMP_LIB)
 
 # ================================================================
 tags:
@@ -170,6 +191,7 @@ clean:
 	-rm -vf libtmk.a
 	-rm -vf $(LIBOBJ)
 	-rm -vf $(EXE)
+	-rm -vf $(EXE_PARALLEL)
 	-rm -vf regtest/*.tmk
 
 .always:

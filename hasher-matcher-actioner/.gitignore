@@ -50,3 +50,6 @@ settings.py
 # We except out hmalib_extensions/gifct on our fork in order to manage our extension code.
 hmalib_extensions/
 !hmalib_extensions/gifct
+
+# Ignore local copy of threatexchange.
+local-threatexchange/

@@ -7,14 +7,21 @@ Wrapper around the MD5 signal types.
 
 import hashlib
 import pathlib
+import re
 import typing as t
 
-from ..descriptor import SimpleDescriptorRollup, ThreatDescriptor
-from . import signal_base
+from threatexchange.content_type.content_base import ContentType
+from threatexchange.content_type.video import VideoContent
+from threatexchange.fetcher.apis.fb_threatexchange_signal import (
+    HasFbThreatExchangeIndicatorType,
+)
+from threatexchange.signal_type import signal_base
 
 
 class VideoMD5Signal(
-    signal_base.SimpleSignalType, signal_base.FileHasher, signal_base.BytesHasher
+    signal_base.SimpleSignalType,
+    signal_base.BytesHasher,
+    HasFbThreatExchangeIndicatorType,
 ):
     """
     Simple signal type for Video MD5s.
@@ -27,8 +34,18 @@ class VideoMD5Signal(
     that are capable of some notion of similarity, such as TMK+PDQF.
     """
 
-    INDICATOR_TYPE = "HASH_MD5"
-    TYPE_TAG = "media_type_video"
+    INDICATOR_TYPE = "VIDEO_HASH_MD5"
+
+    @classmethod
+    def get_content_types(self) -> t.List[t.Type[ContentType]]:
+        return [VideoContent]
+
+    @classmethod
+    def validate_signal_str(cls, signal_str: str) -> str:
+        normalized = signal_str.strip().lower()
+        if not re.match("^[0-9a-f]{32}$", normalized):
+            raise ValueError(f"{signal_str!r} is not a valid MD5 hash")
+        return normalized
 
     @classmethod
     def hash_from_file(cls, path: pathlib.Path) -> str:
@@ -47,14 +64,6 @@ class VideoMD5Signal(
         bytes_hash.update(bytes_)
         return bytes_hash.hexdigest()
 
-
-class PhotoMD5Signal(VideoMD5Signal):
-    """
-    Simple signal type for Photo MD5s.
-
-    Unlike Videos, transcoding of photos is quite common. This should be
-    a format of last resort, as the open source PDQ algorithm will usually
-    have much higher recall without too much loss in precision.
-    """
-
-    TYPE_TAG = "media_type_photo"
+    @staticmethod
+    def get_examples() -> t.List[str]:
+        return ["cab08b36195edb1a1231d2d09fa450e0", "d41d8cd98f00b204e9800998ecf8427e"]

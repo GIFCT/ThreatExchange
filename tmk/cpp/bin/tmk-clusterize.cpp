@@ -18,10 +18,14 @@
 #include <tmk/cpp/io/tmkio.h>
 #include <tmk/cpp/bin/tmk_default_thresholds.h>
 
+#include <omp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <chrono>
 #include <map>
+#include <unordered_map>
 #include <set>
 
 using namespace facebook::tmk;
@@ -30,22 +34,23 @@ using namespace facebook::tmk::algo;
 void handleInputFileNameOrDie(
     const char* argv0,
     const char* tmkFileName,
-    std::map<std::string, std::shared_ptr<TMKFeatureVectors>>&
+    std::unordered_map<std::string, std::shared_ptr<TMKFeatureVectors>>&
         metadataToFeatures);
 
 int handleInputFp(
     const char* argv0,
     const char* tmkFileName,
     FILE* inputFp,
-    std::map<std::string, std::shared_ptr<TMKFeatureVectors>>&
+    std::unordered_map<std::string, std::shared_ptr<TMKFeatureVectors>>&
         metadataToFeatures);
 
 void snowballClusterize(
-    const std::map<std::string, std::shared_ptr<TMKFeatureVectors>>
+    const std::unordered_map<std::string, std::shared_ptr<TMKFeatureVectors>>
         metadataToFeatures,
     float c1,
     float c2,
     bool level1Only,
+    bool verbose,
     std::map<std::string, std::set<std::string>>& equivalenceClasses,
     char* argv0);
 
@@ -76,6 +81,7 @@ void usage(char* argv0, int exit_rc) {
   fprintf(fp, "--level-1-only: Don't do level-2 thresholding (runs faster).\n");
   fprintf(fp, "--min {n}:  Only print clusters of size n or more. Using 2\n");
   fprintf(fp, "            suppresses output of singletons.\n");
+  fprintf(fp, "-v|--verbose: Be more verbose.\n");
   exit(exit_rc);
 }
 
@@ -86,6 +92,7 @@ int main(int argc, char** argv) {
   float c1 = DEFAULT_LEVEL_1_THRESHOLD;
   float c2 = DEFAULT_LEVEL_2_THRESHOLD;
   bool level1Only = false;
+  bool verbose = false;
   int minClusterSizeToPrint = 1;
 
   int argi = 1;
@@ -98,6 +105,10 @@ int main(int argc, char** argv) {
       fileNamesFromStdin = true;
     } else if (!strcmp(flag, "-s")) {
       printSeparateClusters = true;
+    } else if (!strcmp(flag, "-v") || !strcmp(flag, "--verbose")) {
+      verbose = true;
+    } else if (!strcmp(flag, "--level-1-only")) {
+      level1Only = true;
 
     } else if (!strcmp(flag, "--c1")) {
       if (argi >= argc) {
@@ -114,9 +125,6 @@ int main(int argc, char** argv) {
       if (sscanf(argv[argi], "%f", &c2) != 1) {
         usage(argv[0], 1);
       }
-      argi++;
-    } else if (!strcmp(flag, "--level-1-only")) {
-      level1Only = true;
       argi++;
 
     } else if (!strcmp(flag, "--min")) {
@@ -149,7 +157,7 @@ int main(int argc, char** argv) {
   }
 
   // INGEST FEATURES
-  std::map<std::string, std::shared_ptr<TMKFeatureVectors>> metadataToFeatures;
+  std::unordered_map<std::string, std::shared_ptr<TMKFeatureVectors>> metadataToFeatures;
   if (fileNamesFromStdin) {
     char* tmkFileName = nullptr;
     size_t linelen = 0;
@@ -175,7 +183,7 @@ int main(int argc, char** argv) {
   // CLUSTERIZE
   std::map<std::string, std::set<std::string>> equivalenceClasses;
   snowballClusterize(
-      metadataToFeatures, c1, c2, level1Only, equivalenceClasses, argv[0]);
+      metadataToFeatures, c1, c2, level1Only, verbose, equivalenceClasses, argv[0]);
 
   // PRINT OUTPUT
   printTextOutput(
@@ -188,7 +196,7 @@ int main(int argc, char** argv) {
 void handleInputFileNameOrDie(
     const char* argv0,
     const char* tmkFileName,
-    std::map<std::string, std::shared_ptr<TMKFeatureVectors>>&
+    std::unordered_map<std::string, std::shared_ptr<TMKFeatureVectors>>&
         metadataToFeatures) {
   FILE* inputFp =
       facebook::tmk::io::openFileOrDie(tmkFileName, (char*)"rb", argv0);
@@ -201,7 +209,7 @@ int handleInputFp(
     const char* argv0,
     const char* tmkFileName,
     FILE* inputFp,
-    std::map<std::string, std::shared_ptr<TMKFeatureVectors>>&
+    std::unordered_map<std::string, std::shared_ptr<TMKFeatureVectors>>&
         metadataToFeatures) {
   std::shared_ptr<TMKFeatureVectors> pfv =
       TMKFeatureVectors::readFromInputStream(inputFp, argv0);
@@ -219,26 +227,46 @@ int handleInputFp(
 
 // ----------------------------------------------------------------
 void snowballClusterize(
-    const std::map<std::string, std::shared_ptr<TMKFeatureVectors>>
+    const std::unordered_map<std::string, std::shared_ptr<TMKFeatureVectors>>
         metadataToFeatures,
     float c1,
     float c2,
     bool level1Only,
+    bool verbose,
     std::map<std::string, std::set<std::string>>& equivalenceClasses,
     char* argv0) {
-  std::map<std::string, std::set<std::string>> adjacencyMatrix;
+  std::unordered_map<std::string, std::set<std::string>> adjacencyMatrix;
 
   // COMPUTE THE ADJACENCY MATRIX
-  for (const auto& it1 : metadataToFeatures) {
-    const std::string& filename1 = it1.first;
-    const std::shared_ptr<TMKFeatureVectors> pfv1 = it1.second;
-    // printf("... %s\n", filename1.c_str());
-    for (const auto& it2 : metadataToFeatures) {
-      const std::string& filename2 = it2.first;
-      const std::shared_ptr<TMKFeatureVectors> pfv2 = it2.second;
-      // The adjacency matrix is symmetric. So write both sides of the
-      // diagonal, but do the math only one per pair.
-      if (filename1 <= filename2) {
+
+  std::chrono::time_point<std::chrono::system_clock> startAdjacencyMatrix =
+      std::chrono::system_clock::now();
+
+  if (verbose) {
+    printf("\n");
+    printf("CALCULATING THE ADJACENCY MATRIX\n");
+  }
+
+  std::vector<std::string> filenames;
+  filenames.reserve(metadataToFeatures.size());
+
+  for (const auto &s : metadataToFeatures) {
+    // prefill adjacencyMatrix diagonal
+    adjacencyMatrix[s.first].insert(s.first);
+    filenames.push_back(s.first);
+  }
+
+  #pragma omp parallel for schedule(dynamic)
+    // The adjacency matrix is symmetric. So do the math only one per pair.
+    for (unsigned int i = 0; i < filenames.size() - 1; i++) {
+      for (unsigned int j = i + 1; j < filenames.size(); j++) {
+        bool flip = filenames[i] > filenames[j];
+        const std::string &filename1 = flip ? filenames[j] : filenames[i];
+        const std::string &filename2 = flip ? filenames[i] : filenames[j];
+
+        const std::shared_ptr<TMKFeatureVectors> pfv1 = metadataToFeatures.at(filename1);
+        const std::shared_ptr<TMKFeatureVectors> pfv2 = metadataToFeatures.at(filename2);
+
         if (!TMKFeatureVectors::areCompatible(*pfv1, *pfv2)) {
           fprintf(
               stderr,
@@ -262,7 +290,14 @@ void snowballClusterize(
           }
         }
       }
-    }
+    } // end parallel
+
+  std::chrono::time_point<std::chrono::system_clock> endAdjacencyMatrix =
+      std::chrono::system_clock::now();
+  std::chrono::duration<double> matrixSeconds = endAdjacencyMatrix - startAdjacencyMatrix;
+  if (verbose) {
+    printf("\n");
+    printf("ADJACENCY MATRIX SECONDS = %.6lf\n", matrixSeconds.count());
   }
 
   // IDENTIFY CLUSTER REPRESENTATIVES
@@ -280,7 +315,7 @@ void snowballClusterize(
   // We expect to get [A,B,C,D] as one equivalence class and [E] as the other.
   // Representatives are just the first-found, e.g. A and E respectively.
 
-  std::map<std::string, std::string> metadatasToClusterRepresentatives;
+  std::unordered_map<std::string, std::string> metadatasToClusterRepresentatives;
 
   // For each row of the adjacency matrix:
   for (const auto& row_it : adjacencyMatrix) {

@@ -7,18 +7,26 @@ TODO: Slim down to only what we need
 """
 
 import copy
-import datetime
 import json
-import os
-import re
 import typing as t
+import os
+import pathlib
+import re
+
 import urllib.parse
+import urllib.error
 
 import requests
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 
+
 from .api_representations import ThreatPrivacyGroup
+
+
+def is_valid_app_token(token: str) -> bool:
+    """Returns true if the string looks like a valid token"""
+    return bool(re.match("[0-9]{8,}(?:%7C|\\|)[a-zA-Z0-9_\\-]{20,}", token))
 
 
 class TimeoutHTTPAdapter(HTTPAdapter):
@@ -119,8 +127,8 @@ class ThreatExchangeAPI:
         Perform an HTTP GET request, and return the JSON response payload.
         Same timeouts and retry strategy as `_get_session` above.
         """
-        with self._get_session() as session:
-            response = requests.get(url, params=params or {})
+        with self._get_session() as _session:
+            response = requests.get(url, params=params or {})  # !!! Typo? session.get?
             response.raise_for_status()
             return response.json(object_hook=json_obj_hook)
 
@@ -311,6 +319,25 @@ class ThreatExchangeAPI:
 
         url = f"{self._base_url}/{privacy_group}/threat_updates/"
         return _CursoredResponse(self, url, params, decode_fn=decode_fn)
+
+    def get_privacy_group(self, id: int) -> ThreatPrivacyGroup:
+        """
+        Returns a non-paginated list of all privacy groups the current app is a
+        member of.
+        """
+        fields = [
+            "id",
+            "members_can_see",
+            "members_can_use",
+            "name",
+            "description",
+            "last_updated",
+            "added_on",
+            "threat_updates_enabled",
+        ]
+        url = self._get_graph_api_url(f"{id}", {"fields": ",".join(fields)})
+        response = self.get_json_from_url(url)
+        return ThreatPrivacyGroup.from_graph_api_dict(response)
 
     def get_threat_privacy_groups_member(
         self,
