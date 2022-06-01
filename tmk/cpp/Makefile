@@ -1,12 +1,13 @@
 # ----------------------------------------------------------------
-CC=g++ -O2 -std=c++14 -I../..
-FFMPEG=/usr/local/bin/ffmpeg # please customize according to your installation
+CXX=g++ # please customize according to your system --- Note: Apple clang is not supported 
+CC=$(CXX) -O2 -std=c++14 -I../.. #
+FFMPEG=/Users/barrett/homebrew/bin/ffmpeg # please customize according to your installation
 
 ifeq ($(OS),Windows_NT)
-  CC_IF_WIN=g++ -O2 -std=gnu++14 -I../..
+  CC_IF_WIN=$(CXX) -O2 -std=gnu++14 -I../..
   OMP_LIB=-lgomp
 else
-  CC_IF_WIN=g++ -O2 -std=c++14 -I../..
+  CC_IF_WIN=$(CXX) -O2 -std=c++14 -I../.. 
   OMP_LIB=-lomp
 endif
 
@@ -181,6 +182,10 @@ tmk-query-parallel: ./bin/tmk-query.cpp $(LIBHDR) libtmk.a
 tmk-two-level-score-parallel: ./bin/tmk-two-level-score.cpp $(LIBHDR) libtmk.a
 	$(CC_IF_WIN) -Xpreprocessor -fopenmp bin/tmk-two-level-score.cpp -o tmk-two-level-score-parallel -L. -ltmk $(OMP_LIB)
 
+format:
+	find . -iname '*.h' -o -iname '*.cpp' | xargs clang-format -i
+check-format:
+	find . -iname '*.h' -o -iname '*.cpp' | xargs clang-format -n --Werror
 # ================================================================
 tags:
 	ctags -R .

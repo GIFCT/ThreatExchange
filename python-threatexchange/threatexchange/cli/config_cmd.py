@@ -66,7 +66,7 @@ class _UpdateCollabCommand(command_base.Command):
     documented.
     """
 
-    _API_CLS = SignalExchangeAPI
+    _API_CLS: t.ClassVar[t.Type[SignalExchangeAPI]] = SignalExchangeAPI
 
     _IGNORE_FIELDS = {
         "name",
@@ -372,6 +372,7 @@ class ConfigExtensionsCommand(command_base.Command):
             nargs="?",
             help="the module path to the extension. foo.bar.baz",
         )
+        ap.set_defaults(is_config=True)
 
     def __init__(self, action: str, module: t.Optional[str]) -> None:
         self.action = {
