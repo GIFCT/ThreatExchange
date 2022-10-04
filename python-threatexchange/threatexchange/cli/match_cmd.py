@@ -8,14 +8,13 @@ Match command for parsing simple data sources against the dataset.
 import argparse
 import logging
 import pathlib
-import sys
 import typing as t
 
 
 from threatexchange import common
 from threatexchange.cli.fetch_cmd import FetchCommand
 from threatexchange.cli.helpers import FlexFilesInputAction
-from threatexchange.fetcher.fetch_state import FetchedSignalMetadata
+from threatexchange.exchanges.fetch_state import FetchedSignalMetadata
 
 from threatexchange.signal_type.index import IndexMatch, SignalTypeIndex
 from threatexchange.cli.exceptions import CommandError
@@ -32,36 +31,55 @@ TMatcher = t.Callable[[pathlib.Path], t.List[IndexMatch]]
 
 class MatchCommand(command_base.Command):
     """
-    Match content to items in ThreatExchange.
+    Match content to fetched signals
 
-    Using the dataset from the fetch command, try to match content. Not all
-    content and hashing types are implemented, so it's possible that you
-    can download signals, but not match them via this command. In some cases
-    the implementation in this package is sub-optimal, either in completeness
-    (i.e. only matching exact when near-matching is supported), or in runtime
-    (i.e. using a linear implementation when a sublinear implementation exists)
+    Runs the given content through applicable SignalTypes, and compare it
+    with previously fetched signals stored in the index files. Only
+    SignalTypes supported by the CLI and your extensions can be matched,
+    even if you can fetch them. Any matches will be printed to screen.
 
+    # Input
+    You can pass in data to the command in a few different ways:
+    ```
+    # As an input file that contains one signal
+    $ threatexchange match photo my_photo.jpg
+
+    # As stdin
+    $ echo This is my cool text | threatexchange match text -
+
+    # Inline
+    $ threatexchange match text -- This is my cool text
+    ```
+
+    # Output
     The output of this command is in the following format:
 
-      <matched descriptor id> <signal type> <label1> <label2...>
+    <signal type> - (<Collab Name>) <opinion category> <label1>,<label2>,...
 
-    If tying this into your own integrity systems, if the result of this match
-    is human review, you'll want to store the matched descriptor id and make
-    a call to
-
-      all_in_one label descriptor <matched descriptor id>
-
-    with the results of that review.
+    The category is key to understanding what you might want to do with a match.
+    Here's an explanation of the categories. Opinion categories:
+    * POSITIVE_CLASS:
+      All contributors of this signal believe that matching content should belong
+    * INVESTIGATION_SEED:
+      This content needs manual investigation to confirm or fanout to find the
+      content that fits the collaboration
+    * DISPUTED:
+      Some members have said that this signal can be used to find content
+      that fits the collaboration, but others have said it matches content
+      that does not belong in the collaboration.
+    * NEGATIVE_CLASS:
+      Members have said content that matches does not belong in the
+      collaboration, matches the wrong content on their platform, or that this
+      is informational content that shouldn't be treated the same as
+      POSITIVE_CLASS content.
     """
 
-    USE_STDIN = "-"
-
     @classmethod
-    def init_argparse(cls, settings: CLISettings, ap) -> None:
+    def init_argparse(cls, settings: CLISettings, ap: argparse.ArgumentParser) -> None:
 
         ap.add_argument(
             "content_type",
-            type=common.argparse_choices_pre_type(
+            **common.argparse_choices_pre_type_kwargs(
                 [c.get_name() for c in settings.get_all_content_types()],
                 settings.get_content_type,
             ),
@@ -71,7 +89,7 @@ class MatchCommand(command_base.Command):
         ap.add_argument(
             "--only-signal",
             "-S",
-            type=common.argparse_choices_pre_type(
+            **common.argparse_choices_pre_type_kwargs(
                 [s.get_name() for s in settings.get_all_signal_types()],
                 settings.get_signal_type,
             ),
@@ -103,6 +121,12 @@ class MatchCommand(command_base.Command):
             action="store_true",
             help="hide matches if someone has disputed them",
         )
+        ap.add_argument(
+            "--all",
+            "-A",
+            action="store_true",
+            help="show all matches, not just one per collaboration",
+        )
 
     def __init__(
         self,
@@ -112,6 +136,7 @@ class MatchCommand(command_base.Command):
         files: t.List[pathlib.Path],
         show_false_positives: bool,
         hide_disputed: bool,
+        all: bool,
     ) -> None:
         self.content_type = content_type
         self.only_signal = only_signal
@@ -119,6 +144,7 @@ class MatchCommand(command_base.Command):
         self.show_false_positives = show_false_positives
         self.hide_disputed = hide_disputed
         self.files = files
+        self.all = all
 
         if only_signal and content_type not in only_signal.get_content_types():
             raise CommandError(
@@ -144,7 +170,10 @@ class MatchCommand(command_base.Command):
         signal_types = [s for s in signal_types if issubclass(s, types)]
         if self.as_hashes and len(signal_types) > 1:
             raise CommandError(
-                "Too many SignalTypes for --as-hashes. Use also --only-signal", 2
+                f"Error: '{self.content_type.get_name()}' supports more than one SignalType."
+                " for '--hashes' also use '--only-signal' to specify one of "
+                f"{[s.get_name() for s in signal_types]}",
+                2,
             )
 
         logging.info(
@@ -167,7 +196,6 @@ class MatchCommand(command_base.Command):
         for path in self.files:
             for s_type, index in indices:
                 seen = set()  # TODO - maybe take the highest certainty?
-                results = []
                 if self.as_hashes:
                     results = _match_hashes(path, s_type, index)
                 else:
@@ -176,15 +204,22 @@ class MatchCommand(command_base.Command):
                 for r in results:
                     metadatas: t.List[t.Tuple[str, FetchedSignalMetadata]] = r.metadata
                     for collab, fetched_data in metadatas:
-                        if collab in seen:
+                        if not self.all and collab in seen:
                             continue
                         seen.add(collab)
-                        print(s_type.get_name(), f"- ({collab})", fetched_data)
+                        # Supposed to be without whitespace, but let's make sure
+                        distance_str = "".join(r.similarity_info.pretty_str().split())
+                        print(
+                            s_type.get_name(),
+                            distance_str,
+                            f"({collab})",
+                            fetched_data,
+                        )
 
 
 def _match_file(
     path: pathlib.Path, s_type: t.Type[SignalType], index: SignalTypeIndex
-) -> t.List[IndexMatch]:
+) -> t.Sequence[IndexMatch]:
     if issubclass(s_type, MatchesStr):
         return index.query(path.read_text())
     assert issubclass(s_type, FileHasher)
@@ -193,8 +228,8 @@ def _match_file(
 
 def _match_hashes(
     path: pathlib.Path, s_type: t.Type[SignalType], index: SignalTypeIndex
-) -> t.List[IndexMatch]:
-    ret = []
+) -> t.Sequence[IndexMatch]:
+    ret: t.List[IndexMatch] = []
     for hash in path.read_text().splitlines():
         hash = hash.strip()
         if not hash:

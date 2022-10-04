@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import importlib
 import typing as t
 
-from threatexchange.fetcher.fetch_api import SignalExchangeAPI
+from threatexchange.exchanges.signal_exchange_api import SignalExchangeAPI
 from threatexchange.signal_type.signal_base import SignalType
 from threatexchange.content_type.content_base import ContentType
 
@@ -42,7 +42,7 @@ class ThreatExchangeExtensionManifest:
             raise ValueError(f"No such module '{module_name}'")
 
         try:
-            manifest = module.TX_MANIFEST  # type: ignore
+            manifest = module.TX_MANIFEST
         except AttributeError:
             raise ValueError(f"Module is missing TX_MANIFEST")
 

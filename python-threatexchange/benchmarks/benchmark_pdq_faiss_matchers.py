@@ -9,10 +9,11 @@ import pickle
 import numpy
 import faiss
 
-from threatexchange.hashing import (
+from threatexchange.signal_type.pdq.pdq_utils import BITS_IN_PDQ
+
+from threatexchange.signal_type.pdq.pdq_faiss_matcher import (
     PDQFlatHashIndex,
     PDQMultiHashIndex,
-    BITS_IN_PDQ,
 )
 
 parser = argparse.ArgumentParser(

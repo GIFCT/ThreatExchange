@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
 """
@@ -20,14 +19,95 @@ At scale, the flow for matching looks something like:
 
 """
 
-import typing as t
+from dataclasses import dataclass
 import pickle
+import typing as t
 
 
 T = t.TypeVar("T")
+S_Co = t.TypeVar("S_Co", covariant=True, bound="SignalSimilarityInfo")
+CT = t.TypeVar("CT", bound="Comparable")
 
 
-class IndexMatch(t.Generic[T]):
+class Comparable(t.Protocol):
+    """Helper for annotating comparable types."""
+
+    def __lt__(self: CT, other: CT) -> bool:
+        pass
+
+    def __le__(self: CT, other: CT) -> bool:
+        pass
+
+
+NO_DISTANCE_STR = "-"
+
+
+class SignalSimilarityInfo:
+    """
+    Metadata with context about a comparison between content or signals.
+
+    This can be used for logging and debugging, but could also be re-used
+    as an argument to match functions to use as thresholds.
+
+    This information often is treated as a distance, and so comparison
+    operators
+    """
+
+    def __lt__(self, other: t.Any) -> bool:
+        if isinstance(other, SignalSimilarityInfoWithSingleDistance):
+            return False  # < operator valid, but by default, not ordered
+        return NotImplemented
+
+    def __le__(self, other: t.Any) -> bool:
+        # Provide a default impl
+        return self < other or self == other
+
+    # Don't define __gt__ or __ge__ because of unexpected interactions with
+    # functools.total_ordering
+    def pretty_str(self) -> str:
+        """
+        A short string without whitespace about a match with more context.
+
+        See it in action on the CLI in `threatexchange match`.
+        """
+        return NO_DISTANCE_STR
+
+
+@dataclass
+# @functools.total_ordering
+# Can't use yet, need to move library mypy past
+# https://github.com/python/mypy/issues/11728
+class SignalSimilarityInfoWithSingleDistance(t.Generic[CT], SignalSimilarityInfo):
+    distance: CT
+
+    def pretty_str(self) -> str:
+        return str(self.distance)
+
+    def _comparable(
+        self, other: t.Any
+    ) -> t.Optional["SignalSimilarityInfoWithSingleDistance[CT]"]:
+        if isinstance(other, SignalSimilarityInfoWithSingleDistance):
+            if isinstance(self.distance, other.distance.__class__):
+                return other
+        return None
+
+    def __lt__(self, other: t.Any) -> bool:
+        checked = self._comparable(other)
+        if checked is None:
+            return NotImplemented
+        return self.distance < checked.distance
+
+    def __eq__(self, other: object) -> bool:
+        checked = self._comparable(other)
+        if checked is None:
+            return super().__eq__(other)
+        return self.distance == checked.distance
+
+
+SignalSimilarityInfoWithIntDistance = SignalSimilarityInfoWithSingleDistance[int]
+
+
+class IndexMatchUntyped(t.Generic[S_Co, T]):
     """
     Wrapper around a match to the index, which may or may not
     be an actual match based on the distance settings for a source.
@@ -39,13 +119,24 @@ class IndexMatch(t.Generic[T]):
     NamedTuple can't be made generic, so here's an equivalent
     """
 
-    __slots__ = ["distance", "metadata"]
-    distance: int
+    __slots__ = ["similarity_info", "metadata"]
+    similarity_info: S_Co
     metadata: T
 
-    def __init__(self, distance: int, metadata: T) -> None:
-        self.distance = distance
+    def __init__(self, similarity_info: S_Co, metadata: T) -> None:
+        self.similarity_info = similarity_info
         self.metadata = metadata
+
+    def __eq__(self, other: t.Any) -> bool:
+        if isinstance(other, IndexMatchUntyped):
+            return (
+                self.similarity_info == other.similarity_info
+                and self.metadata == other.metadata
+            )
+        return super().__eq__(other)
+
+
+IndexMatch = IndexMatchUntyped[SignalSimilarityInfo, T]
 
 
 Self = t.TypeVar("Self", bound="SignalTypeIndex")
@@ -97,7 +188,7 @@ class SignalTypeIndex(t.Generic[T]):
     """
 
     # TODO - this doesn't handle bytes queries / BytesHashers
-    def query(self, query: str) -> t.List[IndexMatch[T]]:
+    def query(self, query: str) -> t.Sequence[IndexMatch[T]]:
         """
         Look up entries against the index, up to the max supported distance.
 
@@ -149,21 +240,9 @@ class SignalTypeIndex(t.Generic[T]):
 
         Could also be premature optimization, you decide!
         """
-        raise NotImplementedError
+        fout.write(pickle.dumps(self))
 
     @classmethod
     def deserialize(cls: t.Type[Self], fin: t.BinaryIO) -> Self:
         """Instanciate an index from a previous call to serialize"""
-        raise NotImplementedError
-
-
-PickedSelf = t.TypeVar("PickedSelf", bound=SignalTypeIndex)
-
-
-class PickledSignalTypeIndex(SignalTypeIndex[T]):
-    def serialize(self, fout: t.BinaryIO) -> None:
-        fout.write(pickle.dumps(self))
-
-    @classmethod
-    def deserialize(cls: t.Type[PickedSelf], fin: t.BinaryIO) -> PickedSelf:
         return pickle.loads(fin.read())

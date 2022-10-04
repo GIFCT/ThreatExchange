@@ -12,14 +12,16 @@ from enum import Enum
 from urllib.error import HTTPError
 from mypy_boto3_sqs.client import SQSClient
 
-from threatexchange.fb_threatexchange.descriptor import ThreatDescriptor
+from threatexchange.exchanges.clients.fb_threatexchange.descriptor import (
+    ThreatDescriptor,
+)
 from threatexchange.signal_type.signal_base import SignalType
 from threatexchange.signal_type.md5 import VideoMD5Signal
 from threatexchange.signal_type.pdq import PdqSignal
 from threatexchange.content_type.content_base import ContentType
 from threatexchange.content_type.photo import PhotoContent
 from threatexchange.content_type.video import VideoContent
-from threatexchange.meta import FunctionalityMapping, SignalTypeMapping
+from threatexchange.interface_validation import FunctionalityMapping, SignalTypeMapping
 
 from hmalib.common.models.pipeline import MatchRecord
 from hmalib.common.models.signal import (

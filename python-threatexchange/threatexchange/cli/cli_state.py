@@ -18,14 +18,16 @@ import logging
 from threatexchange.signal_type.index import SignalTypeIndex
 from threatexchange.signal_type.signal_base import SignalType
 from threatexchange.cli.exceptions import CommandError
-from threatexchange.fetcher.collab_config import CollaborationConfigBase
-from threatexchange.fetcher.fetch_state import (
-    FetchCheckpointBase,
+from threatexchange.exchanges.collab_config import CollaborationConfigBase
+from threatexchange.exchanges.fetch_state import (
     FetchDelta,
-    FetchedSignalMetadata,
+    FetchDeltaTyped,
 )
-from threatexchange.fetcher.simple import state as simple_state
-from threatexchange.fetcher.fetch_api import SignalExchangeAPI
+from threatexchange.exchanges import helpers
+from threatexchange.exchanges.signal_exchange_api import (
+    SignalExchangeAPI,
+    SignalExchangeAPIWithSimpleUpdates,
+)
 from threatexchange.signal_type import signal_base
 from threatexchange.signal_type import index
 
@@ -88,16 +90,13 @@ class CliIndexStore:
             return signal_type.get_index_cls().deserialize(fin)
 
 
-class CliSimpleState(simple_state.SimpleFetchedStateStore):
+class CliSimpleState(helpers.SimpleFetchedStateStore):
     """
     A simple on-disk storage format for the CLI.
 
     Ideally, it should be easy to read manually (for debugging),
     but compact enough to handle very large sets of data.
     """
-
-    JSON_CHECKPOINT_KEY = "checkpoint"
-    JSON_RECORDS_KEY = "records"
 
     def __init__(
         self, api_cls: t.Type[SignalExchangeAPI], fetched_state_dir: pathlib.Path
@@ -107,10 +106,20 @@ class CliSimpleState(simple_state.SimpleFetchedStateStore):
 
     def collab_file(self, collab_name: str) -> pathlib.Path:
         """The file location for collaboration state"""
-        return self.dir / f"{collab_name}.state.json"
+        return self.dir / f"{collab_name}.state.pickle"
+
+    def exists(self, collab: CollaborationConfigBase) -> bool:
+        """
+        Returns true if the state file is available
+
+        This usually means that state is available, but the file could also be
+        corrupt or unparsable.
+        """
+        return self.collab_file(collab.name).is_file()
 
     def clear(self, collab: CollaborationConfigBase) -> None:
         """Delete a collaboration and its state directory"""
+        super().clear(collab)
         file = self.collab_file(collab.name)
         if file.is_file():
             logging.info("Removing %s", file)
@@ -123,7 +132,8 @@ class CliSimpleState(simple_state.SimpleFetchedStateStore):
     def _read_state(
         self,
         collab_name: str,
-    ) -> t.Optional[simple_state.T_FetchDelta]:
+    ) -> t.Optional[FetchDeltaTyped]:
+
         file = self.collab_file(collab_name)
         if not file.is_file():
             return None
@@ -132,15 +142,12 @@ class CliSimpleState(simple_state.SimpleFetchedStateStore):
                 delta = pickle.load(f)
 
             assert isinstance(delta, FetchDelta), "Unexpected class type?"
-            delta = t.cast(simple_state.T_FetchDelta, delta)
+            delta = t.cast(FetchDeltaTyped, delta)
             assert (
-                delta.next_checkpoint().__class__.__name__
-                == self.api_cls.get_checkpoint_cls().__name__
-            ), "wrong checkpoint class?"
+                delta.checkpoint.__class__ == self.api_cls.get_checkpoint_cls()
+            ), f"wrong checkpoint class stored in {file}?"
 
-            logging.debug(
-                "Loaded %s with %d records", collab_name, delta.record_count()
-            )
+            logging.debug("Loaded %s with %d records", collab_name, len(delta.updates))
             return delta
         except Exception:
             logging.exception("Failed to read state for %s", collab_name)
@@ -149,29 +156,28 @@ class CliSimpleState(simple_state.SimpleFetchedStateStore):
                 "You might have to delete it with `threatexchange fetch --clear`"
             )
 
-    def _write_state(  # type: ignore[override]  # Fix in followup PR
+    def _write_state(
         self,
         collab_name: str,
-        delta: simple_state.SimpleFetchDelta[
-            FetchCheckpointBase, FetchedSignalMetadata
-        ],
+        delta: FetchDeltaTyped,
     ) -> None:
         file = self.collab_file(collab_name)
         if not file.parent.exists():
             file.parent.mkdir(parents=True)
 
-        record_sanity_check = next(
-            (record for record in delta.update_record.values()),
-            None,
-        )
-
-        if record_sanity_check is not None:
-            assert (  # Not isinstance - we want exactly this class
-                record_sanity_check.__class__ == self.api_cls.get_record_cls()
-            ), (
-                f"Record cls: want {self.api_cls.get_record_cls().__name__} "
-                f"got {record_sanity_check.__class__.__name__}"
+        if issubclass(self.api_cls, SignalExchangeAPIWithSimpleUpdates):
+            record_sanity_check = next(
+                (record for record in delta.updates.values()),
+                None,
             )
+
+            if record_sanity_check is not None:
+                assert (  # Not isinstance - we want exactly this class
+                    record_sanity_check.__class__ == self.api_cls.get_record_cls()
+                ), (
+                    f"Record cls: want {self.api_cls.get_record_cls().__name__} "
+                    f"got {record_sanity_check.__class__.__name__}"
+                )
         tmpfile = file.with_name(f".{file.name}")
         with tmpfile.open("wb") as f:
             pickle.dump(delta, f)

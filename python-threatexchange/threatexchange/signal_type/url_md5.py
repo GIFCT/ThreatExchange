@@ -13,7 +13,7 @@ from threatexchange.content_type.url import URLContent
 from threatexchange.signal_type import signal_base
 from threatexchange import common
 from threatexchange.signal_type.url import URLSignal
-from threatexchange.fetcher.apis.fb_threatexchange_signal import (
+from threatexchange.exchanges.impl.fb_threatexchange_signal import (
     HasFbThreatExchangeIndicatorType,
 )
 
@@ -30,8 +30,12 @@ class UrlMD5Signal(
     INDICATOR_TYPE = "HASH_URL_MD5"
 
     @classmethod
-    def get_content_types(self) -> t.List[t.Type[ContentType]]:
+    def get_content_types(cls) -> t.List[t.Type[ContentType]]:
         return [URLContent]
+
+    @classmethod
+    def get_index_cls(cls) -> t.Type[signal_base.TrivialSignalTypeIndex]:
+        return signal_base.TrivialSignalTypeIndex
 
     @classmethod
     def hash_from_str(cls, url: str) -> str:

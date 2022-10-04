@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
 import collections
@@ -10,12 +9,14 @@ import typing as t
 
 from threatexchange.cli.cli_config import CLISettings
 from threatexchange.cli.dataset_cmd import DatasetCommand
-from threatexchange.fetcher.collab_config import CollaborationConfigBase
-from threatexchange.fetcher.fetch_api import SignalExchangeAPI
-from threatexchange.fetcher.fetch_state import (
+from threatexchange.exchanges.collab_config import CollaborationConfigBase
+from threatexchange.exchanges.signal_exchange_api import (
+    SignalExchangeAPI,
+    TSignalExchangeAPICls,
+)
+from threatexchange.exchanges.fetch_state import (
     FetchCheckpointBase,
-    FetchDelta,
-    FetchedSignalMetadata,
+    FetchDeltaTyped,
     FetchedStateStoreBase,
 )
 from threatexchange.cli import command_base
@@ -24,6 +25,17 @@ from threatexchange.cli import command_base
 class FetchCommand(command_base.Command):
     """
     Download content from signal exchange APIs to disk.
+
+    Fetches data for collaborations that you've configured with
+      $ threatexchange config collab edit
+
+    Fetching is checkpointed, and you can safely interrupt by using CTRL+C.
+
+    Some APIs require that you regularly re-fetch them within some number
+    of days or else the stored data becomes invalid.
+
+    This command is laconic by default, try `threatexchange -v fetch` for
+    more granular details.
     """
 
     PROGRESS_PRINT_INTERVAL_SEC = 30
@@ -49,8 +61,15 @@ class FetchCommand(command_base.Command):
             help="stop fetching after this many seconds",
         )
         ap.add_argument(
+            "--checkpoint-every",
+            type=int,
+            metavar="SEC",
+            default=600,
+            help="write state to disk if still fetching, or 0 to disable",
+        )
+        ap.add_argument(
             "--only-api",
-            choices=[f.get_name() for f in settings.get_fetchers()],
+            choices=[api.get_name() for api in settings.apis],
             help="only fetch from this API",
         )
         ap.add_argument(
@@ -68,6 +87,7 @@ class FetchCommand(command_base.Command):
         skip_index_rebuild: bool = False,
         only_api: t.Optional[str] = None,
         only_collab: t.Optional[str] = None,
+        checkpoint_every: int = 600,
     ) -> None:
         self.clear = clear
         self.time_limit_sec = time_limit_sec
@@ -80,6 +100,8 @@ class FetchCommand(command_base.Command):
         # Limits
         self.total_fetched_count = 0
         self.start_time = time.time()
+        self.last_checkpoint_time = time.time()
+        self.checkpoint_every = checkpoint_every
 
         # Progress
         self.last_update_time: t.Optional[int] = None
@@ -96,10 +118,14 @@ class FetchCommand(command_base.Command):
                 return True
         return False
 
+    def should_checkpoint(self):
+        if self.checkpoint_every <= 0:
+            return False
+        return time.time() > self.checkpoint_every + self.last_checkpoint_time
+
     def execute(self, settings: CLISettings) -> None:
-        fetchers = settings.get_fetchers()
         # Verify collab arguments
-        self.collabs = settings.get_all_collabs(default_to_sample=True)
+        self.collabs = settings.get_all_collabs()
         if self.only_collab:
             self.collabs = [c for c in self.collabs if c.name == self.only_collab]
             if not self.collabs:
@@ -113,21 +139,21 @@ class FetchCommand(command_base.Command):
         # Do work
         if self.clear:
             self.stderr("Clearing fetched state")
-            for fetcher in settings.get_fetchers():
-                store = settings.get_fetch_store_for_fetcher(fetcher)
+            for api in settings.apis:
+                store = settings.fetched_state.get_for_api(api)
                 for collab in self.collabs:
                     if self.only_collab not in (None, collab.name):
                         continue
-                    logging.info("Clearing %s - %s", fetcher.get_name(), collab.name)
+                    logging.info("Clearing %s - %s", api.get_name(), collab.name)
                     store.clear(collab)
             return
 
         all_succeeded = True
         any_succeded = False
 
-        for fetcher in fetchers:
-            logging.info("Fetching all %s's configs", fetcher.get_name())
-            succeeded = self.execute_for_fetcher(settings, fetcher)
+        for api in settings.apis:
+            logging.info("Fetching all %s's configs", api.get_name())
+            succeeded = self.execute_for_api(settings, api)
             all_succeeded &= succeeded
             any_succeded |= succeeded
 
@@ -138,58 +164,83 @@ class FetchCommand(command_base.Command):
         if not all_succeeded:
             raise command_base.CommandError("Some collabs had errors!", 3)
 
-    def execute_for_fetcher(
-        self, settings: CLISettings, fetcher: SignalExchangeAPI
+    def execute_for_api(
+        self, settings: CLISettings, api: TSignalExchangeAPICls
     ) -> bool:
         success = True
         for collab in self.collabs:
-            if collab.api != fetcher.get_name():
+            if collab.api != api.get_name():
                 continue
             if not collab.enabled:
                 logging.debug(
                     "Skipping %s, disabled",
                 )
                 continue
-            fetch_ok = self.execute_for_collab(settings, fetcher, collab)
+            fetch_ok = self.execute_for_collab(settings, collab)
             success &= fetch_ok
         return success
 
     def execute_for_collab(
         self,
         settings: CLISettings,
-        fetcher: SignalExchangeAPI,
         collab: CollaborationConfigBase,
     ) -> bool:
-
-        store = settings.get_fetch_store_for_fetcher(fetcher.__class__)
+        api = settings.apis.get_instance_for_collab(collab)
+        store = settings.fetched_state.get_for_api(api.__class__)
         checkpoint = self._verify_store_and_checkpoint(store, collab)
 
         self.progress_fetched_count = 0
         self.current_collab = collab.name
-        self.current_api = fetcher.get_name()
+        self.current_api = api.get_name()
+        completed = False
 
         try:
-            while not self.has_hit_limits():
-                delta: FetchDelta[
-                    FetchCheckpointBase, FetchedSignalMetadata
-                ] = fetcher.fetch_once(
-                    settings.get_all_signal_types(), collab, checkpoint
+            it = api.fetch_iter(settings.get_all_signal_types(), checkpoint)
+            delta: FetchDeltaTyped
+            for delta in it:
+                assert delta.checkpoint is not None  # Infinite loop protection
+                progress_time = delta.checkpoint.get_progress_timestamp()
+                logging.info(
+                    "fetch() with %d new records%s",
+                    len(delta.updates),
+                    (
+                        ""
+                        if progress_time is None
+                        else f" @ {_timeformat(progress_time)}"
+                    ),
                 )
-                logging.info("Fetched %d records", delta.record_count())
-                next_checkpoint = delta.next_checkpoint()
-                self._fetch_progress(delta.record_count(), next_checkpoint)
-                assert next_checkpoint is not None  # Infinite loop protection
+                next_checkpoint = delta.checkpoint
+                self._fetch_progress(len(delta.updates), next_checkpoint)
+                if checkpoint is not None:
+                    prev_time = checkpoint.get_progress_timestamp()
+                    if prev_time is not None and progress_time is not None:
+                        assert prev_time <= progress_time, (
+                            "checkpoint time rewound? ",
+                            "This can indicate a serious ",
+                            "problem with the API and checkpointing",
+                        )
+                checkpoint = next_checkpoint  # Only used for the rewind check
+
                 store.merge(collab, delta)
-                if not delta.has_more():
+                if self.has_hit_limits():
+                    self.stderr("Hit limits, checkpointing")
                     break
-        except:
+                if self.should_checkpoint():
+                    self._print_progress(checkpoint=True)
+                    store.flush()
+                    self.last_checkpoint_time = time.time()
+            completed = True
+        except Exception:
             self._stderr_current("failed to fetch!")
             logging.exception("Failed to fetch %s", collab.name)
             return False
+        except KeyboardInterrupt:
+            self._stderr_current("Interrupted, writing a checkpoint...")
+            raise
         finally:
             store.flush()
 
-        self._print_progress(done=True)
+        self._print_progress(done=completed)
         return True
 
     def _verify_store_and_checkpoint(
@@ -198,6 +249,7 @@ class FetchCommand(command_base.Command):
         checkpoint = store.get_checkpoint(collab)
 
         if checkpoint is not None and checkpoint.is_stale():
+            logging.info("checkpoint stale for %s, clearing", collab.name)
             store.clear(collab)
             return None
 
@@ -221,10 +273,12 @@ class FetchCommand(command_base.Command):
             f"[{self.current_api}] {self.current_collab} - {msg}",
         )
 
-    def _print_progress(self, *, done=False):
-        processed = "Syncing..."
+    def _print_progress(self, *, done=False, checkpoint=False):
+        processed = "Fetching..."
         if done:
             processed = "Up to date"
+        elif checkpoint:
+            processed = "Checkpointing"
         elif self.progress_fetched_count:
             processed = f"Downloaded {self.progress_fetched_count} updates"
 
@@ -235,9 +289,11 @@ class FetchCommand(command_base.Command):
             elif self.last_update_time >= time.time() - 1:
                 from_time = "moments ago"
             else:
-                from_time = datetime.datetime.fromtimestamp(
-                    self.last_update_time
-                ).isoformat()
-            from_time = f", at {from_time}"
+                from_time = _timeformat(self.last_update_time)
+            from_time = f" at {from_time}"
 
         self._stderr_current(f"{processed}{from_time}")
+
+
+def _timeformat(timestamp: int) -> str:
+    return datetime.datetime.fromtimestamp(timestamp).isoformat()

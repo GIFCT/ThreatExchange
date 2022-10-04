@@ -5,114 +5,105 @@
 Hash command to convert content into signatures.
 """
 
+import argparse
 import pathlib
-import sys
 import typing as t
+from threatexchange import common
 from threatexchange.cli.cli_config import CLISettings
 from threatexchange.cli.exceptions import CommandError
+from threatexchange.content_type.content_base import ContentType
 
-from threatexchange.signal_type.signal_base import BytesHasher, FileHasher, TextHasher
+from threatexchange.signal_type.signal_base import FileHasher, SignalType
 from threatexchange.cli import command_base
+from threatexchange.cli.helpers import FlexFilesInputAction
 
 
-# TODO consider refactor to handle overlap with match
 class HashCommand(command_base.Command):
     """
-    Hash content into signatures (aka hashes).
+    Take content and convert it into signatures (aka hashes)
 
-    Reads inputs as filenames by default, though it will attempt to read
-    inline with --inline. Most useful with with content type `text`.
+    # Input
+    You can pass in data to the command in a few different ways:
+    (Note - you may not be able to hash text without an extension)
+    ```
+    # As an input file that contains one signal
+    $ threatexchange hash photo my_photo.jpg
 
-    You can also pass in via stdin by using "-" as the content.
+    # As stdin
+    $ echo This is my cool text | threatexchange hash text -
+
+    # Inline
+    $ threatexchange hash text -- This is my cool text
+    ```
+
+    # Output
+    <SignalType> <hash string>
     """
 
-    USE_STDIN = "-"
-
     @classmethod
-    def init_argparse(cls, settings: CLISettings, ap) -> None:
+    def init_argparse(cls, settings: CLISettings, ap: argparse.ArgumentParser) -> None:
 
         signal_types = [
-            s
-            for s in settings.get_all_signal_types()
-            if issubclass(s, (TextHasher, BytesHasher))
+            s for s in settings.get_all_signal_types() if issubclass(s, FileHasher)
         ]
 
+        content_choices = sorted(s.get_name() for s in settings.get_all_content_types())
+        signal_choices = sorted(
+            s.get_name() for s in signal_types if issubclass(s, FileHasher)
+        )
         ap.add_argument(
             "content_type",
-            choices={c.get_name() for s in signal_types for c in s.get_content_types()},
+            **common.argparse_choices_pre_type_kwargs(
+                choices=content_choices,
+                type=settings.get_content_type,
+            ),
             help="what kind of content to hash",
+        )
+
+        ap.add_argument(
+            "files",
+            nargs=argparse.REMAINDER,
+            action=FlexFilesInputAction,
+            help="list of files, URLs, - for stdin, or -- to interpret remainder as a string",
         )
 
         ap.add_argument(
             "--signal-type",
             "-S",
-            choices=[s.get_name() for s in signal_types],
+            **common.argparse_choices_pre_type_kwargs(
+                choices=signal_choices,
+                type=settings.get_signal_type,
+            ),
             help="only generate these signal types",
-        )
-
-        ap.add_argument(
-            "--inline",
-            "-I",
-            action="store_true",
-            help="interpret content inline instead of as filenames",
-        )
-
-        ap.add_argument(
-            "content",
-            nargs="+",
-            help="list of content or '-' for stdin",
         )
 
     def __init__(
         self,
-        content_type: str,
-        signal_type: t.Optional[str],
-        inline: bool,
-        content: t.Union[t.List[str], t.TextIO],
+        content_type: t.Type[ContentType],
+        signal_type: t.Optional[t.Type[SignalType]],
+        files: t.List[pathlib.Path],
     ) -> None:
-        self.content_type_str = content_type
+        self.content_type = content_type
         self.signal_type = signal_type
 
-        if content == [self.USE_STDIN]:
-            content = sys.stdin
-        self.input_generator = self._parse_input(content, inline)
-
-    def _parse_input(
-        self,
-        input_: t.Iterable[str],
-        force_input_to_text: bool,
-    ) -> t.Generator[t.Union[str, pathlib.Path], None, None]:
-        for token in input_:
-            token = token.rstrip()
-            if force_input_to_text:
-                yield token
-            else:
-                yield pathlib.Path(token)
+        self.files = files
 
     def execute(self, settings: CLISettings) -> None:
-        content_type = settings.get_content_type(self.content_type_str)
-
-        all_signal_types = [
+        hashers = [
             s
-            for s in settings.get_signal_types_for_content(content_type)
-            if self.signal_type in (None, s.get_name())
+            for s in settings.get_signal_types_for_content(self.content_type)
+            if issubclass(s, FileHasher)
         ]
+        if self.signal_type is not None:
+            if self.signal_type not in hashers:
+                raise CommandError.user(
+                    f"{self.signal_type.get_name()} "
+                    f"does not apply to {self.content_type.get_name()}"
+                )
+            hashers = [self.signal_type]  # type: ignore  # can't detect intersection types
 
-        file_hashers = [s for s in all_signal_types if issubclass(s, FileHasher)]
-        str_hashers = [s for s in all_signal_types if issubclass(s, TextHasher)]
-
-        for inp in self.input_generator:
-            hash_fn = lambda s, t: s.hash_from_file(t)
-            signal_types: t.List[t.Any] = file_hashers
-            if isinstance(inp, str):
-                hash_fn = lambda s, t: s.hash_from_str(t)
-                signal_types = str_hashers
-            for signal_type in signal_types:
-                try:
-                    hash_str = hash_fn(signal_type, inp)
-                    if hash_str:
-                        print(signal_type.get_name(), hash_str)
-                except FileNotFoundError:
-                    raise CommandError(
-                        f"The file {inp} doesn't exist or the file path is incorrect", 2
-                    )
+        for file in self.files:
+            for hasher in hashers:
+                hash_str = hasher.hash_from_file(file)
+                if hash_str:
+                    print(hasher.get_name(), hash_str)

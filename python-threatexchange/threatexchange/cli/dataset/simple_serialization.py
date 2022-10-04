@@ -7,8 +7,10 @@ import pathlib
 import re
 import typing as t
 
-from threatexchange.fb_threatexchange import threat_updates
-from threatexchange.fb_threatexchange.descriptor import SimpleDescriptorRollup
+from threatexchange.exchanges.clients.fb_threatexchange import threat_updates
+from threatexchange.exchanges.clients.fb_threatexchange.descriptor import (
+    SimpleDescriptorRollup,
+)
 
 _EXTENSION = ".te"
 
@@ -48,7 +50,7 @@ class CliIndicatorSerialization(threat_updates.ThreatUpdateSerialization):
 
     # ToDo this violates Liskov but is already used in Prod and will require a larger refactor
     @classmethod
-    def store(  # type: ignore
+    def store(
         cls, state_dir: pathlib.Path, contents: t.Iterable["CliIndicatorSerialization"]
     ) -> t.List[pathlib.Path]:
         # Stores in multiple files split by indicator type

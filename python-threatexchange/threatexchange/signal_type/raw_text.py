@@ -5,7 +5,7 @@
 Wrapper around the raw text signal type.
 """
 
-import math
+from dataclasses import dataclass
 import typing as t
 
 import Levenshtein
@@ -15,9 +15,38 @@ from threatexchange.content_type.content_base import ContentType
 from threatexchange.content_type.text import TextContent
 from threatexchange.signal_type import signal_base
 from threatexchange.signal_type import index
-from threatexchange.fetcher.apis.fb_threatexchange_signal import (
+from threatexchange.exchanges.impl.fb_threatexchange_signal import (
     HasFbThreatExchangeIndicatorType,
 )
+
+
+@dataclass
+class RawTextDistance(index.SignalSimilarityInfo):
+    """
+    Even though we use simple int thresholds, display as a 0-100% match.
+
+    We re-project it onto the length of the query string.
+    """
+
+    distance: int
+    query_str_len: int
+
+    @property
+    def diff_fraction(self) -> float:
+        """0.0 -> 1.0 how different query was from target"""
+        return min(self.distance, self.query_str_len) / max(1, self.query_str_len)
+
+    @property
+    def match_fraction(self) -> float:
+        """0.0 -> 1.0 roughly what percent of the string matched"""
+        return 1 - self.diff_fraction
+
+    @classmethod
+    def from_levenshtein(cls, needle: str, distance: int) -> "RawTextDistance":
+        return cls(distance, len(needle))
+
+    def pretty_str(self) -> str:
+        return f"{(self.match_fraction) * 100:.0f}%"
 
 
 class RawTextSignal(
@@ -36,29 +65,29 @@ class RawTextSignal(
     INDICATOR_TYPE = "TEXT_STRING"
 
     @classmethod
-    def get_content_types(self) -> t.List[t.Type[ContentType]]:
+    def get_content_types(cls) -> t.List[t.Type[ContentType]]:
         return [TextContent]
 
     @classmethod
     def matches_str(
-        cls, signal: str, haystack: str, distance_threshold: t.Optional[int] = None
-    ) -> signal_base.HashComparisonResult:
-        threshold = 5  # Match considered if 95% match
-        if distance_threshold is not None:
-            assert 0 < distance_threshold <= 100
-            threshold = distance_threshold
+        cls, signal: str, haystack: str, pct_diff_threshold: float = 5.0
+    ) -> signal_base.SignalComparisonResult:
+        assert 0 < pct_diff_threshold <= 100
         a = common.normalize_string(signal)
         b = common.normalize_string(haystack)
-        max_match_distance = len(a) - len(a) * (100 - threshold) / 100
+        max_match_distance = len(a) - len(a) * (100 - pct_diff_threshold) / 100
 
         ldiff = abs(len(a) - len(b))
 
         if ldiff > max_match_distance:
-            return signal_base.HashComparisonResult.from_no_match(ldiff)
+            return signal_base.SignalComparisonResult.from_simple_dist(
+                ldiff, max_match_distance
+            )
 
-        distance = Levenshtein.distance(a, b)
-        return signal_base.HashComparisonResult(
-            distance <= max_match_distance, distance
+        distance: int = Levenshtein.distance(a, b)
+        return signal_base.SignalComparisonResult(
+            distance <= max_match_distance,
+            RawTextDistance.from_levenshtein(a, distance),
         )
 
     @classmethod

@@ -6,6 +6,8 @@ import boto3
 import typing as t
 from contextlib import contextmanager
 
+from hmalib.common.config import HMAConfig
+
 
 class DynamoDBTableTestBase:
     # Note, the MRO requires this be the first class to inherit. _before_
@@ -36,6 +38,7 @@ class DynamoDBTableTestBase:
         os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
         os.environ["AWS_SECURITY_TOKEN"] = "testing"
         os.environ["AWS_SESSION_TOKEN"] = "testing"
+        os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
 
     @classmethod
     def setUpClass(cls):
@@ -94,3 +97,12 @@ class HMAConfigTestBase(DynamoDBTableTestBase):
         from hmalib.common import config
 
         config._TABLE_NAME = None
+
+    @contextmanager
+    def fresh_dynamodb(self):
+        try:
+            with super().fresh_dynamodb():
+                HMAConfig.initialize(self.TABLE_NAME)
+                yield
+        finally:
+            pass

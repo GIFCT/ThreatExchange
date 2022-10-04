@@ -1,10 +1,10 @@
-#!/usr/bin/env python
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
 """
 Core abstractions for signal types.
 """
 
+import abc
 import pathlib
 import typing as t
 
@@ -13,28 +13,47 @@ from threatexchange.content_type import content_base
 from threatexchange.signal_type import index
 
 
-class HashComparisonResult(t.NamedTuple):
+class SignalComparisonResult(t.NamedTuple):
     match: bool
-    distance: int
+    distance: index.SignalSimilarityInfo
 
     @classmethod
-    def from_match(cls, dist: int = 0) -> "HashComparisonResult":
-        return cls(True, dist)
+    def from_bool_only(cls, matches: bool) -> "SignalComparisonResult":
+        """For SignalTypes with no distance"""
+        return cls.from_match_only() if matches else cls.from_no_match_only()
 
     @classmethod
-    def from_no_match(cls, dist: int = 1) -> "HashComparisonResult":
-        return cls(False, dist)
+    def from_match_only(cls) -> "SignalComparisonResult":
+        """For SignalTypes with no distance"""
+        return cls(True, index.SignalSimilarityInfo())
 
     @classmethod
-    def from_dist(cls, dist: int, threshold: int) -> "HashComparisonResult":
-        return cls(dist <= threshold, dist)
+    def from_no_match_only(cls) -> "SignalComparisonResult":
+        """For SignalTypes with no distance"""
+        return cls(False, index.SignalSimilarityInfo())
 
     @classmethod
-    def from_bool(cls, matches: bool) -> "HashComparisonResult":
-        return cls.from_match() if matches else cls.from_no_match()
+    def from_simple_dist(
+        cls, dist: index.CT, threshold: index.CT
+    ) -> "SignalComparisonResult":
+        """For SignalTypes with simple distance"""
+        return cls(
+            dist <= threshold,
+            index.SignalSimilarityInfoWithSingleDistance[index.CT](dist),
+        )
+
+    @classmethod
+    def from_dist(
+        cls, dist: index.SignalSimilarityInfo, threshold: index.SignalSimilarityInfo
+    ) -> "SignalComparisonResult":
+        """For SignalTypes w"""
+        return cls(
+            dist <= threshold,
+            dist,
+        )
 
 
-class SignalType:
+class SignalType(abc.ABC):
     """
     Abstraction for different signal types.
 
@@ -52,31 +71,27 @@ class SignalType:
     """
 
     @classmethod
-    def get_name(cls):
+    def get_name(cls) -> str:
         """A compact name in lower_with_underscore style (used in filenames)"""
         return common.class_name_to_human_name(cls.__name__, "Signal")
 
     @classmethod
-    def get_content_types(self) -> t.List[t.Type[content_base.ContentType]]:
+    @abc.abstractmethod
+    def get_content_types(cls) -> t.List[t.Type[content_base.ContentType]]:
         """Which content types this Signal applies to (usually just one)"""
-        raise NotImplementedError
+        pass
 
     @classmethod
+    @abc.abstractmethod
     def get_index_cls(cls) -> t.Type[index.SignalTypeIndex]:
         """Return the index class that handles this signal type"""
-        return TrivialSignalTypeIndex
-
-    @classmethod
-    def compare_hash(
-        cls, hash1: str, hash2: str, distance_threshold: t.Optional[int] = None
-    ) -> HashComparisonResult:
-        """
-        Compare the distance of two hashes, the key operation for matching.
-
-        Note that this can just be a reference/helper, and the efficient
-        version of the algorithm can live in the index class.
-        """
-        raise NotImplementedError
+        # Confused about which one to start with?
+        # Make a subclass of:
+        #   1. TrivialLinearSearchHashIndex: Just use compare_hash
+        #   2. TrivialLinearSearchMatchIndex: If you are MatchesStr
+        # Or if you only support exact matching (like MD5):
+        #   3. TrivialSignalTypeIndex
+        pass
 
     @classmethod
     def validate_signal_str(cls, signal_str: str) -> str:
@@ -88,22 +103,43 @@ class SignalType:
         return signal_str.strip()
 
     @staticmethod
+    @abc.abstractmethod
     def get_examples() -> t.List[str]:
         """
-        @see threatexchange.fetcher.simple.static_sample
+        Return example signals, which can be used for tests or demos.
+
+        Strings returned by this class are automatically pulled in by the
+        StaticSampleSignalExchangeAPI, which it will "fetch" and build
+        indices for if the Signal is enabled.
         """
         return []
 
 
-class FileHasher:
+class FileHasher(abc.ABC):
     """
     This class can hash files.
     """
 
     @classmethod
+    @abc.abstractmethod
+    def compare_hash(cls, hash1: str, hash2: str) -> SignalComparisonResult:
+        """
+        Compare the distance of two hashes, the key operation for matching.
+
+        Note that this can just be a reference/helper, and the efficient
+        version of the algorithm can live in the index class.
+        """
+        pass
+
+    @classmethod
+    @abc.abstractmethod
     def hash_from_file(cls, file: pathlib.Path) -> str:
-        """Get a string representation of the hash from a file"""
-        raise NotImplementedError
+        """
+        Get a string representation of the hash from a file.
+
+        If a hash cannot be generated, empty string should be returned.
+        """
+        pass
 
 
 class TextHasher(FileHasher):
@@ -112,27 +148,31 @@ class TextHasher(FileHasher):
     """
 
     @classmethod
+    @abc.abstractmethod
     def hash_from_str(cls, text: str) -> str:
-        """Get a string representation of the hash from a string"""
-        raise NotImplementedError
+        """
+        Get a string representation of the hash from a string.
+
+        If a hash cannot be generated, empty string should be returned.
+        """
+        pass
 
     @classmethod
     def hash_from_file(cls, file: pathlib.Path) -> str:
         return cls.hash_from_str(file.read_text())
 
 
-class MatchesStr:
+class MatchesStr(abc.ABC):
     @classmethod
-    def matches_str(
-        cls, signal: str, haystack: str, distance_threshold: t.Optional[int] = None
-    ) -> HashComparisonResult:
+    @abc.abstractmethod
+    def matches_str(cls, signal: str, haystack: str) -> SignalComparisonResult:
         """
-        Compare the distance of two hashes, the key operation for matching.
+        Compare the signal and text, the key operation for matching.
 
         Note that this can just be a reference/helper, and the efficient
         version of the algorithm can live in the index class.
         """
-        raise NotImplementedError
+        pass
 
 
 class BytesHasher(FileHasher):
@@ -141,9 +181,14 @@ class BytesHasher(FileHasher):
     """
 
     @classmethod
+    @abc.abstractmethod
     def hash_from_bytes(cls, bytes_: bytes) -> str:
-        """Get a string representation of the hash from bytes."""
-        raise NotImplementedError
+        """
+        Get a string representation of the hash from bytes.
+
+        If a hash cannot be generated, empty string should be returned.
+        """
+        pass
 
     @classmethod
     def hash_from_file(cls, file: pathlib.Path) -> str:
@@ -158,15 +203,11 @@ class SimpleSignalType(SignalType):
     """
 
     @classmethod
-    def compare_hash(
-        cls, hash1: str, hash2: str, distance_threshold: t.Optional[int] = None
-    ) -> HashComparisonResult:
-        if distance_threshold is not None:
-            raise ValueError("distance_threshold not supported")
-        return HashComparisonResult.from_bool(hash1 == hash2)
+    def compare_hash(cls, hash1: str, hash2: str) -> SignalComparisonResult:
+        return SignalComparisonResult.from_bool_only(hash1 == hash2)
 
 
-class TrivialSignalTypeIndex(index.PickledSignalTypeIndex[index.T]):
+class TrivialSignalTypeIndex(index.SignalTypeIndex[index.T]):
     """
     Index that does only exact matches
     """
@@ -175,7 +216,10 @@ class TrivialSignalTypeIndex(index.PickledSignalTypeIndex[index.T]):
         self.state: t.Dict[str, t.List[index.T]] = {}
 
     def query(self, query: str) -> t.List[index.IndexMatch[index.T]]:
-        return [index.IndexMatch(0, meta) for meta in self.state.get(query, [])]
+        return [
+            index.IndexMatch(index.SignalSimilarityInfo(), meta)
+            for meta in self.state.get(query, [])
+        ]
 
     def add(self, signal_str: str, entry: index.T) -> None:
         l = self.state.get(signal_str)
@@ -185,7 +229,7 @@ class TrivialSignalTypeIndex(index.PickledSignalTypeIndex[index.T]):
         l.append(entry)
 
 
-class TrivialLinearSearchHashIndex(index.PickledSignalTypeIndex[index.T]):
+class TrivialLinearSearchHashIndex(index.SignalTypeIndex[index.T]):
     """
     Index that does a linear search and serializes with pickle
 
@@ -194,7 +238,7 @@ class TrivialLinearSearchHashIndex(index.PickledSignalTypeIndex[index.T]):
 
     # You'll have to override with each usecase, because I wasn't sure
     # If pickle would behave expectedly here
-    _SIGNAL_TYPE: t.Type[SignalType]
+    _SIGNAL_TYPE: t.Type[FileHasher]
 
     def __init__(self) -> None:
         self.state: t.List[t.Tuple[str, index.T]] = []
@@ -211,15 +255,14 @@ class TrivialLinearSearchHashIndex(index.PickledSignalTypeIndex[index.T]):
         self.state.append((signal_str, entry))
 
 
-class TrivialLinearSearchMatchIndex(index.PickledSignalTypeIndex[index.T]):
+class TrivialLinearSearchMatchIndex(index.SignalTypeIndex[index.T]):
     """
     Index that does a linear search and serializes with pickle
 
     O(n) is the best n, clearly.
     """
 
-    # You'll have to override with each usecase, because I wasn't sure
-    # If pickle would behave expectedly here
+    # You'll have to override with each usecase
     _SIGNAL_TYPE: t.Type[MatchesStr]
 
     def __init__(self) -> None:

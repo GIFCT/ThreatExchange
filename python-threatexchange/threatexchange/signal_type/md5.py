@@ -12,7 +12,7 @@ import typing as t
 
 from threatexchange.content_type.content_base import ContentType
 from threatexchange.content_type.video import VideoContent
-from threatexchange.fetcher.apis.fb_threatexchange_signal import (
+from threatexchange.exchanges.impl.fb_threatexchange_signal import (
     HasFbThreatExchangeIndicatorType,
 )
 from threatexchange.signal_type import signal_base
@@ -34,11 +34,15 @@ class VideoMD5Signal(
     that are capable of some notion of similarity, such as TMK+PDQF.
     """
 
-    INDICATOR_TYPE = "VIDEO_HASH_MD5"
+    INDICATOR_TYPE = {"HASH_VIDEO_MD5": None, "HASH_MD5": "media_type_video"}
 
     @classmethod
-    def get_content_types(self) -> t.List[t.Type[ContentType]]:
+    def get_content_types(cls) -> t.List[t.Type[ContentType]]:
         return [VideoContent]
+
+    @classmethod
+    def get_index_cls(cls) -> t.Type[signal_base.TrivialSignalTypeIndex]:
+        return signal_base.TrivialSignalTypeIndex
 
     @classmethod
     def validate_signal_str(cls, signal_str: str) -> str:
@@ -59,7 +63,7 @@ class VideoMD5Signal(
         return file_hash.hexdigest()
 
     @classmethod
-    def hash_from_bytes(self, bytes_: bytes) -> str:
+    def hash_from_bytes(cls, bytes_: bytes) -> str:
         bytes_hash = hashlib.md5()
         bytes_hash.update(bytes_)
         return bytes_hash.hexdigest()

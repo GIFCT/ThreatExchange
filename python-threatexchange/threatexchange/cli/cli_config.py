@@ -17,15 +17,20 @@ import logging
 
 from dacite import WrongTypeError
 
-from threatexchange.fetcher import collab_config
-from threatexchange.fetcher.fetch_api import SignalExchangeAPI
+from threatexchange.exchanges import collab_config
+from threatexchange.exchanges.impl.stop_ncii_api import StopNCIICredentials
+from threatexchange.exchanges.signal_exchange_api import (
+    SignalExchangeAPI,
+    TCollabConfig,
+    TSignalExchangeAPICls,
+)
 from threatexchange.content_type import content_base
-from threatexchange.fetcher.fetch_state import FetchedStateStoreBase
-from threatexchange.fetcher.apis.static_sample import StaticSampleSignalExchangeAPI
+from threatexchange.exchanges import fetch_state
+from threatexchange.exchanges.impl.static_sample import StaticSampleSignalExchangeAPI
 from threatexchange.signal_type import signal_base
-from threatexchange.meta import FunctionalityMapping
+from threatexchange.interface_validation import FunctionalityMapping
 from threatexchange.cli.cli_state import CliSimpleState, CliIndexStore
-from threatexchange.cli import dataclass_json as cli_json
+from threatexchange.utils import dataclass_json
 
 
 CONFIG_FILENAME = "config.json"
@@ -36,7 +41,10 @@ class CLiConfig:
     """A place to store misc configuration for the CLI"""
 
     fb_threatexchange_api_token: t.Optional[str] = None
+    ncmec_credentials: t.Optional[t.Tuple[str, str]] = None
+    stop_ncii_keys: t.Optional[StopNCIICredentials] = None
     extensions: t.Set[str] = field(default_factory=set)
+    # Every item needs a default for backwards compatibility
 
 
 class CliState(collab_config.CollaborationConfigStoreBase):
@@ -53,9 +61,7 @@ class CliState(collab_config.CollaborationConfigStoreBase):
     ):
         self._dir = dir.expanduser()
 
-        self._name_to_ctype = {
-            ft.get_name(): ft.get_config_class() for ft in fetch_types
-        }
+        self._name_to_ctype = {ft.get_name(): ft.get_config_cls() for ft in fetch_types}
 
         self._cache: t.Optional[
             t.Dict[str, collab_config.CollaborationConfigBase]
@@ -93,12 +99,12 @@ class CliState(collab_config.CollaborationConfigStoreBase):
         return self.collab_dir / f"{config.name}.json"
 
     def get_persistent_config(self) -> CLiConfig:
-        return cli_json.dataclass_load_file(
+        return dataclass_json.dataclass_load_file(
             self.config_file, CLiConfig, default=CLiConfig()
         )
 
     def update_persistent_config(self, config: CLiConfig):
-        cli_json.dataclass_dump_file(self.config_file, config)
+        dataclass_json.dataclass_dump_file(self.config_file, config)
 
     def dir_for_fetched_state(
         self,
@@ -136,7 +142,7 @@ class CliState(collab_config.CollaborationConfigStoreBase):
                         logging.warning("Ignoring collab config of unknown type: %s", f)
                         continue
                 try:
-                    config = cli_json.dataclass_load_dict(content, ctype)
+                    config = dataclass_json.dataclass_load_dict(content, ctype)
                     ret.append(config)
                 except WrongTypeError:
                     logging.exception("Failed to parse collab config: %s", f)
@@ -147,11 +153,58 @@ class CliState(collab_config.CollaborationConfigStoreBase):
         """Create or update a collaboration"""
         assert collab.api, "didn't set API?"
         path = self.path_for_collab_config(collab)
-        cli_json.dataclass_dump_file(path, collab)
+        dataclass_json.dataclass_dump_file(path, collab)
 
     def delete_collab(self, collab: collab_config.CollaborationConfigBase) -> None:
         """Delete a collaboration"""
         self.path_for_collab_config(collab).unlink(missing_ok=True)
+
+
+@dataclass
+class _SignalExchangeAccessor:
+    """Convenience wrapper for operations on the SignalExchangeAPI"""
+
+    _parent: "CLISettings"
+
+    def get_all(self) -> t.ValuesView[TSignalExchangeAPICls]:
+        return self._parent._mapping.exchange.api_by_name.values()
+
+    def get_instance_for_collab(
+        self, collab: TCollabConfig
+    ) -> SignalExchangeAPI[
+        TCollabConfig,
+        fetch_state.FetchCheckpointBase,
+        fetch_state.FetchedSignalMetadata,
+        t.Any,
+        t.Any,
+    ]:
+        api_cls = self._parent._mapping.exchange.api_by_name[collab.api]
+        return api_cls.for_collab(collab)
+
+    def __iter__(self) -> t.Iterator[TSignalExchangeAPICls]:
+        yield from self.get_all()
+
+
+@dataclass
+class _FetchStoreAccessor:
+    """Convenience wrapper for operations on the state"""
+
+    _parent: "CLISettings"
+
+    def empty(self) -> bool:
+        """Return the collabs with stored state"""
+        collabs = self._parent.get_all_collabs()
+        return not any(
+            collab for collab in collabs if self.get_for_collab(collab).exists(collab)
+        )
+
+    def get_for_api(self, api: t.Type[SignalExchangeAPI]) -> CliSimpleState:
+        return CliSimpleState(api, self._parent._state.dir_for_fetched_state(api))
+
+    def get_for_collab(
+        self, collab: collab_config.CollaborationConfigBase
+    ) -> CliSimpleState:
+        return self.get_for_api(self._parent._mapping.exchange.api_by_name[collab.api])
 
 
 class CLISettings:
@@ -169,6 +222,8 @@ class CLISettings:
         self._sample_message_printed = False
         self._config: t.Optional[CLiConfig] = None
         self.index = CliIndexStore(cli_state.index_dir)
+        self.fetched_state = _FetchStoreAccessor(self)
+        self.apis = _SignalExchangeAccessor(self)
 
     def get_persistent_config(self) -> CLiConfig:
         if self._config is None:
@@ -196,33 +251,13 @@ class CLISettings:
     ) -> t.List[t.Type[signal_base.SignalType]]:
         return self._mapping.signal_and_content.signal_type_by_content[content_type]
 
-    def get_fetchers(self):
-        return [fs for fs in self._mapping.fetcher.fetchers_by_name.values()]
-
-    def get_api_for_collab(
-        self, collab: collab_config.CollaborationConfigBase
-    ) -> SignalExchangeAPI:
-        return self._mapping.fetcher.fetchers_by_name[collab.api]
-
-    def get_fetch_store_for_fetcher(
-        self, fetcher: t.Type[SignalExchangeAPI]
-    ) -> FetchedStateStoreBase:
-        return CliSimpleState(fetcher, self._state.dir_for_fetched_state(fetcher))
-
-    def get_fetch_store_for_collab(
-        self, collab: collab_config.CollaborationConfigBase
-    ) -> FetchedStateStoreBase:
-        return self.get_fetch_store_for_fetcher(
-            self._mapping.fetcher.fetchers_by_name[collab.api].__class__
-        )
-
     @property
     def in_demo_mode(self) -> bool:
         """Has no live collabs"""
         return not self._state.get_all_collabs()
 
     def get_all_collabs(
-        self, *, default_to_sample: bool = False
+        self, *, default_to_sample: bool = True
     ) -> t.List[collab_config.CollaborationConfigBase]:
         if self.in_demo_mode and default_to_sample:
             return [self._get_sample_collab()]
@@ -246,19 +281,11 @@ class CLISettings:
             )
             self._sample_message_printed = True
         return collab_config.CollaborationConfigBase(
-            "Sample Signals",
-            StaticSampleSignalExchangeAPI.get_name(),
-            enabled=True,
-            only_signal_types={s.get_name() for s in self.get_all_signal_types()},
-            not_signal_types=set(),
-            only_owners=set(),
-            not_owners=set(),
-            only_tags=set(),
-            not_tags=set(),
+            "Sample Signals", StaticSampleSignalExchangeAPI.get_name(), enabled=True
         )
 
-    def get_collabs_for_fetcher(
-        self, fetcher: SignalExchangeAPI
+    def get_collabs_for_api(
+        self, api: SignalExchangeAPI
     ) -> t.List[collab_config.CollaborationConfigBase]:
-        api_name = fetcher.get_name()
+        api_name = api.get_name()
         return [c for c in self.get_all_collabs() if c.api == api_name]

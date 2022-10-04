@@ -13,7 +13,7 @@ from threatexchange.content_type.text import TextContent
 
 from threatexchange.signal_type import signal_base
 from threatexchange.signal_type import index
-from threatexchange.fetcher.apis.fb_threatexchange_signal import (
+from threatexchange.exchanges.impl.fb_threatexchange_signal import (
     HasFbThreatExchangeIndicatorType,
 )
 
@@ -65,7 +65,7 @@ class TrendQuerySignal(
     INDICATOR_TYPE = "TREND_QUERY"
 
     @classmethod
-    def get_content_types(self) -> t.List[t.Type[ContentType]]:
+    def get_content_types(cls) -> t.List[t.Type[ContentType]]:
         return [TextContent]
 
     @classmethod
@@ -77,12 +77,10 @@ class TrendQuerySignal(
 
     @classmethod
     def matches_str(
-        cls, hash: str, haystack: str, distance_threshold: t.Optional[int] = None
-    ) -> signal_base.HashComparisonResult:
-        if distance_threshold is not None:
-            raise ValueError("distance_threshold not supported")
+        cls, hash: str, haystack: str
+    ) -> signal_base.SignalComparisonResult:
         tq = TrendQuery(json.loads(hash))
-        return signal_base.HashComparisonResult.from_bool(tq.matches(haystack))
+        return signal_base.SignalComparisonResult.from_bool_only(tq.matches(haystack))
 
     @classmethod
     def get_index_cls(cls) -> t.Type[index.SignalTypeIndex]:
@@ -111,7 +109,7 @@ class TrendQuerySignal(
         ]
 
 
-class TrendQueryIndex(index.PickledSignalTypeIndex[index.T]):
+class TrendQueryIndex(index.SignalTypeIndex[index.T]):
     def __init__(self) -> None:
         self.state: t.Dict[str, t.Tuple[TrendQuery, t.List[index.T]]] = {}
 
@@ -120,7 +118,9 @@ class TrendQueryIndex(index.PickledSignalTypeIndex[index.T]):
         ret: t.List[index.IndexMatch[index.T]] = []
         for tq, values in self.state.values():
             if tq.matches(hash):
-                ret.extend(index.IndexMatch(0, v) for v in values)
+                ret.extend(
+                    index.IndexMatch(index.SignalSimilarityInfo(), v) for v in values
+                )
         return ret
 
     def add(self, hash: str, value: index.T) -> None:
