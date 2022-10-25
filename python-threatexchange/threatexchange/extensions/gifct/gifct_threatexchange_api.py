@@ -117,16 +117,13 @@ class GIFCTThreatExchangeOpinion(state.SignalOpinion):
             d["owner_app_id"] = d["owner"]
         super().__setstate__(d)
 
+
 # SPJ: A new class to hold indicator-level fields. Making this a separate composed class facilitates analyzing in
 # Python Pandas down the road, vs. adding these fields directly to the GIFCTThreatExchangeIndicatorRecord.
 @dataclass
-class GIFCTIndicatorRecord:
+class GIFCTIndicatorMetadata:
 
     id: str
-
-    indicator: str
-
-    hash_type: str
 
     creation_time: int
 
@@ -139,11 +136,9 @@ class GIFCTIndicatorRecord:
     status: str
 
     @classmethod
-    def from_json(cls, te_json: ThreatUpdateJSON) -> "GIFCTIndicatorRecord":
+    def from_json(cls, te_json: ThreatUpdateJSON) -> "GIFCTIndicatorMetadata":
         return cls(
             te_json.raw_json.get("id", ""),
-            te_json.raw_json.get("indicator", ""),
-            te_json.raw_json.get("type", ""),
             te_json.raw_json.get("creation_time", ""),
             te_json.raw_json.get("last_updated", ""),
             te_json.raw_json.get("should_delete", ""),
@@ -156,7 +151,7 @@ class GIFCTIndicatorRecord:
 class GIFCTThreatExchangeIndicatorRecord(state.FetchedSignalMetadata):
 
     # SPJ: Added new indicator field
-    indicator: GIFCTIndicatorRecord
+    indicator: GIFCTIndicatorMetadata
 
     opinions: t.List[GIFCTThreatExchangeOpinion]
 
@@ -173,7 +168,7 @@ class GIFCTThreatExchangeIndicatorRecord(state.FetchedSignalMetadata):
             return None
 
         # SPJ: Extract indicator-level fields from te_json
-        indicator_fields = GIFCTIndicatorRecord.from_json(te_json)
+        indicator_fields = GIFCTIndicatorMetadata.from_json(te_json)
 
         explicit_opinions: t.Dict[int, GIFCTThreatExchangeOpinion] = {}
         implicit_opinions: t.Dict[int, state.SignalOpinionCategory] = {}
@@ -484,7 +479,8 @@ def _merge_record_for_signal_type(
         if len(applicable_opinions) != len(tx_record.opinions):
             tx_record = GIFCTThreatExchangeIndicatorRecord(
                 # SPJ: Need to pass in the indicator fields when constructing a new record object
-                tx_record.indicator, applicable_opinions
+                tx_record.indicator,
+                applicable_opinions,
             )
     if existing is not None:
         existing.merge(tx_record)
