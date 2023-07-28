@@ -185,8 +185,13 @@ class GIFCTThreatExchangeIndicatorRecord(state.FetchedSignalMetadata):
                 tags = sorted(tag["text"] for tag in tags["data"])
 
             # SPJ: Extract additional descriptor-level fields from td_json
-            owner_email = td_json["owner"]["email"]
-            owner_name = td_json["owner"]["name"]
+            owner = td_json.get("owner", None)
+            owner_email = ""
+            owner_name = ""
+            if owner is not None:
+                owner_email = owner.get("email", "")
+                owner_name = owner.get("name", "")
+
             status = td_json["status"]
             added_on = td_json["added_on"]
             reactions = (td_json.get("reactions", []),)
